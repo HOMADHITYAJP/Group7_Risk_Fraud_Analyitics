@@ -1,0 +1,588 @@
+---
+title: "MODEL"
+author: "HOMADHITYA J P"
+date: "2024-10-22"
+output: html_document
+---
+
+
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(caret)
+
+# Load the cleaned dataset
+df_cleaned <- read.csv("OG_DATA_cleaned.csv")
+
+# Select only numerical columns for PCA
+numerical_columns <- c("Tot_Benes", "Tot_Srvcs", "Tot_Bene_Day_Srvcs", 
+                       "Avg_Sbmtd_Chrg", "Avg_Mdcr_Alowd_Amt", 
+                       "Avg_Mdcr_Pymt_Amt", "Avg_Mdcr_Stdzd_Amt")
+
+df_numerical <- df_cleaned %>%
+  select(numerical_columns)
+
+# Normalize the numerical columns using Min-Max scaling
+preproc <- preProcess(df_numerical, method = "range")
+df_normalized <- predict(preproc, df_numerical)
+
+# Apply PCA
+pca_model <- prcomp(df_normalized, center = TRUE, scale. = TRUE)
+
+# Get the PCA-transformed data
+df_pca <- pca_model$x
+
+# Calculate the reconstruction error by inversely transforming the PCA data
+df_reconstructed <- as.data.frame(df_pca %*% t(pca_model$rotation))
+colnames(df_reconstructed) <- colnames(df_numerical)
+
+# Calculate reconstruction error (Euclidean distance between original and reconstructed data)
+reconstruction_error <- rowSums((df_normalized - df_reconstructed)^2)
+
+# Calculate min, max, and average reconstruction error
+min_error <- min(reconstruction_error)
+max_error <- max(reconstruction_error)
+avg_error <- mean(reconstruction_error)
+
+cat("Minimum Reconstruction Error:", min_error, "\n")
+cat("Maximum Reconstruction Error:", max_error, "\n")
+cat("Average Reconstruction Error:", avg_error, "\n")
+
+# Apply log transformation to amplify differences (log(1 + error) avoids log(0))
+reconstruction_error_log <- log1p(reconstruction_error)
+
+# Shift the minimum error to ensure no negative values
+reconstruction_error_shifted <- reconstruction_error_log - min(reconstruction_error_log)
+
+# Normalize the scores between 1 and 100
+fraudulent_score <- 1 + 99 * (reconstruction_error_shifted / max(reconstruction_error_shifted))
+
+# Ensure all values are within [1, 100]
+fraudulent_score <- pmax(1, fraudulent_score)
+
+# Add the fraudulent score to the original dataset
+df_cleaned$Fraudulent_Score <- fraudulent_score
+
+# Save the dataset with Fraudulent Score
+write.csv(df_cleaned, "score_with_fraudulent_score.csv", row.names = FALSE)
+
+# Preview the dataset
+head(df_cleaned)
+
+
+```
+
+```{r}
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(dplyr)
+
+# Load the dataset with the Fraudulent_Score
+df <- read.csv("score_with_fraudulent_score.csv")
+
+# Select the features and target variable
+target_variable <- "Fraudulent_Score"
+features <- c("Tot_Benes", "Tot_Srvcs", "Tot_Bene_Day_Srvcs", "Avg_Sbmtd_Chrg", 
+              "Avg_Mdcr_Alowd_Amt", "Avg_Mdcr_Pymt_Amt", "Avg_Mdcr_Stdzd_Amt")
+
+# Prepare data for XGBoost (remove non-numeric and the target)
+df_xgboost <- df %>%
+  select(all_of(features), all_of(target_variable))
+
+# Split the data into training (80%) and testing (20%) sets
+set.seed(123)  # For reproducibility
+train_index <- createDataPartition(df_xgboost[[target_variable]], p = 0.8, list = FALSE)
+
+train_data <- df_xgboost[train_index, ]
+test_data <- df_xgboost[-train_index, ]
+
+# Convert training and test data to matrices (as required by xgboost)
+train_matrix <- as.matrix(train_data[, features])
+test_matrix <- as.matrix(test_data[, features])
+
+# Convert target variables for train and test
+train_label <- train_data[[target_variable]]
+test_label <- test_data[[target_variable]]
+
+# Convert to xgboost DMatrix objects
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+# Set XGBoost parameters (regression)
+params <- list(
+  objective = "reg:squarederror",  # For regression tasks
+  eval_metric = "rmse",            # Root Mean Square Error
+  max_depth = 6,                   # Maximum depth of a tree
+  eta = 0.1,                       # Learning rate
+  subsample = 0.8,                 # Subsampling ratio
+  colsample_bytree = 0.8           # Column sampling ratio
+)
+
+# Train the XGBoost model
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,  # Number of boosting rounds
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 10,  # Stop if no improvement after 10 rounds
+  print_every_n = 10
+)
+
+# Make predictions on the test set
+test_pred <- predict(xgb_model, newdata = dtest)
+
+# Evaluate model performance
+# Root Mean Squared Error (RMSE)
+rmse <- sqrt(mean((test_pred - test_label)^2))
+cat("RMSE:", rmse, "\n")
+
+# Mean Absolute Error (MAE)
+mae <- mean(abs(test_pred - test_label))
+cat("MAE:", mae, "\n")
+
+# R-squared
+r_squared <- 1 - (sum((test_label - test_pred)^2) / sum((test_label - mean(test_label))^2))
+cat("R-squared:", r_squared, "\n")
+
+# Plot feature importance
+importance_matrix <- xgb.importance(feature_names = colnames(train_matrix), model = xgb_model)
+xgb.plot.importance(importance_matrix)
+
+# Save the model (optional)
+xgb.save(xgb_model, "xgboost_model.model")
+
+# Calculate residuals
+residuals <- abs(test_label - test_pred)
+
+# Create a new data frame with all original data from df and predictions
+# Retain the original data from the full dataset
+result_data <- df[-train_index, ] %>%
+  mutate(Predicted_Fraudulent_Score = test_pred, Residual = residuals)
+
+# Save the new dataset including all original features, predicted scores, and residuals
+write.csv(result_data, "test_data_with_predictions.csv", row.names = FALSE)
+
+# Print first few rows of the result data
+head(result_data)
+
+
+
+```
+
+
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Read the dataset
+data <- read.csv("test_data_with_predictions.csv")
+
+# Define conditions for moderate and high suspicious transactions
+moderate_suspicious <- data %>%
+  filter(Residual > 2 & Residual < 5) %>%
+  select(Rndrng_NPI) %>%
+  pull()
+
+high_suspicious <- data %>%
+  filter(Residual > 6) %>%
+  select(Rndrng_NPI) %>%
+  pull()
+
+# Count of non-suspicious transactions
+non_suspicious_count <- nrow(data %>% filter(Residual < 2))
+
+# Print results
+cat("Moderate Suspicious Transactions :\n")
+print(moderate_suspicious)
+
+cat("\nHigh Suspicious Transactions :\n")
+print(high_suspicious)
+
+cat("\nNumber of Non-Suspicious Transactions:", non_suspicious_count, "\n")
+
+
+```
+```{r}
+getwd()  
+Sys.Date()
+Sys.info()
+
+```
+
+```{r}
+# Install required packages
+#install.packages("xgboost")      # For XGBoost modeling
+#install.packages("caret")        # For model training and evaluation
+#install.packages("dplyr")        # For data manipulation
+#install.packages("ggplot2")      # For data visualization (e.g., confusion matrix, histogram)
+#install.packages("ROCR")         # For ROC curve performance plotting
+#install.packages("tidyr")        # For tidying data (used in ggplot2 plotting)
+
+```
+```{r}
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(dplyr)
+library(ggplot2)      # For visualizations
+library(ROCR)         # For ROC curve
+library(tidyr)        # For tidying data
+
+# Load the dataset with the Fraudulent_Score
+df <- read.csv("score_with_fraudulent_score.csv")
+
+# Select the features and target variable
+target_variable <- "Fraudulent_Score"
+features <- c("Tot_Benes", "Tot_Srvcs", "Tot_Bene_Day_Srvcs", "Avg_Sbmtd_Chrg", 
+              "Avg_Mdcr_Alowd_Amt", "Avg_Mdcr_Pymt_Amt", "Avg_Mdcr_Stdzd_Amt")
+
+# Prepare data for XGBoost (remove non-numeric and the target)
+df_xgboost <- df %>%
+  select(all_of(features), all_of(target_variable))
+
+# Split the data into training (80%) and testing (20%) sets
+set.seed(123)  # For reproducibility
+train_index <- createDataPartition(df_xgboost[[target_variable]], p = 0.8, list = FALSE)
+
+train_data <- df_xgboost[train_index, ]
+test_data <- df_xgboost[-train_index, ]
+
+# Convert training and test data to matrices (as required by xgboost)
+train_matrix <- as.matrix(train_data[, features])
+test_matrix <- as.matrix(test_data[, features])
+
+# Convert target variables for train and test
+train_label <- train_data[[target_variable]]
+test_label <- test_data[[target_variable]]
+
+# Convert to xgboost DMatrix objects
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+# Set XGBoost parameters (regression)
+params <- list(
+  objective = "reg:squarederror",  # For regression tasks
+  eval_metric = "rmse",            # Root Mean Square Error
+  max_depth = 6,                   # Maximum depth of a tree
+  eta = 0.1,                       # Learning rate
+  subsample = 0.8,                 # Subsampling ratio
+  colsample_bytree = 0.8           # Column sampling ratio
+)
+
+# Train the XGBoost model
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,  # Number of boosting rounds
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 10,  # Stop if no improvement after 10 rounds
+  print_every_n = 10
+)
+
+# Make predictions on the test set
+test_pred <- predict(xgb_model, newdata = dtest)
+
+# Convert continuous predicted fraudulent score to binary (fraudulent vs non-fraudulent)
+threshold <- 6  # Example threshold for categorizing fraud
+test_pred_class <- ifelse(test_pred > threshold, 1, 0)  # 1 = fraud, 0 = not fraud
+
+# Calculate metrics
+conf_matrix <- confusionMatrix(factor(test_pred_class), factor(test_label))
+
+# Print metrics
+cat("Accuracy:", conf_matrix$overall['Accuracy'], "\n")
+cat("Precision:", conf_matrix$byClass['Pos Pred Value'], "\n")
+cat("Recall:", conf_matrix$byClass['Sensitivity'], "\n")
+cat("F1-Score:", conf_matrix$byClass['F1'], "\n")
+
+# Create confusion matrix visualization
+conf_matrix_table <- as.data.frame(conf_matrix$table)
+ggplot(conf_matrix_table, aes(x = Reference, y = Prediction)) +
+  geom_tile(aes(fill = Freq), color = "white") +
+  geom_text(aes(label = Freq), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "blue") +
+  labs(title = "Confusion Matrix", fill = "Frequency") +
+  theme_minimal()
+
+# ROC Curve for model performance
+pred_roc <- prediction(test_pred, test_label)
+perf_roc <- performance(pred_roc, measure = "tpr", x.measure = "fpr")
+plot(perf_roc, main = "ROC Curve", col = "blue", lwd = 2)
+abline(a = 0, b = 1, col = "gray", lty = 2)
+
+# Feature importance visualization
+importance_matrix <- xgb.importance(feature_names = colnames(train_matrix), model = xgb_model)
+xgb.plot.importance(importance_matrix)
+
+# Save the model (optional)
+xgb.save(xgb_model, "xgboost_model.model")
+
+# Calculate residuals
+residuals <- abs(test_label - test_pred)
+
+# Create a new data frame with all original data from df and predictions
+result_data <- df[-train_index, ] %>%
+  mutate(Predicted_Fraudulent_Score = test_pred, Residual = residuals)
+
+# Save the new dataset including all original features, predicted scores, and residuals
+write.csv(result_data, "test_data_with_predictions.csv", row.names = FALSE)
+
+# Print first few rows of the result data
+head(result_data)
+
+# Visualizing the distribution of fraudulent scores
+ggplot(result_data, aes(x = Predicted_Fraudulent_Score)) +
+  geom_histogram(binwidth = 0.5, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Predicted Fraudulent Scores", x = "Predicted Fraudulent Score", y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r}
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(ROCR)
+library(pROC)  # For multi-class ROC
+
+# Load the dataset with the Fraudulent_Score
+df <- read.csv("score_with_fraudulent_score.csv")
+
+# Select the features and target variable
+target_variable <- "Fraudulent_Score"
+features <- c("Tot_Benes", "Tot_Srvcs", "Tot_Bene_Day_Srvcs", "Avg_Sbmtd_Chrg", 
+              "Avg_Mdcr_Alowd_Amt", "Avg_Mdcr_Pymt_Amt", "Avg_Mdcr_Stdzd_Amt")
+
+# Prepare data for XGBoost (remove non-numeric and the target)
+df_xgboost <- df %>%
+  select(all_of(features), all_of(target_variable))
+
+# Split the data into training (80%) and testing (20%) sets
+set.seed(123)  # For reproducibility
+train_index <- createDataPartition(df_xgboost[[target_variable]], p = 0.8, list = FALSE)
+
+train_data <- df_xgboost[train_index, ]
+test_data <- df_xgboost[-train_index, ]
+
+# Convert training and test data to matrices (as required by xgboost)
+train_matrix <- as.matrix(train_data[, features])
+test_matrix <- as.matrix(test_data[, features])
+
+# Convert target variables for train and test
+train_label <- train_data[[target_variable]]
+test_label <- test_data[[target_variable]]
+
+# Convert to xgboost DMatrix objects
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+# Set XGBoost parameters (regression)
+params <- list(
+  objective = "reg:squarederror",  # For regression tasks
+  eval_metric = "rmse",            # Root Mean Square Error
+  max_depth = 6,                   # Maximum depth of a tree
+  eta = 0.1,                       # Learning rate
+  subsample = 0.8,                 # Subsampling ratio
+  colsample_bytree = 0.8           # Column sampling ratio
+)
+
+# Train the XGBoost model
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,  # Number of boosting rounds
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 10,  # Stop if no improvement after 10 rounds
+  print_every_n = 10
+)
+
+# Make predictions on the test set
+test_pred <- predict(xgb_model, newdata = dtest)
+
+# Convert continuous predictions to categorical (e.g., low, medium, high fraud)
+test_pred_class <- ifelse(test_pred > 6, "High", 
+                          ifelse(test_pred > 2, "Medium", "Low"))
+
+# Convert the test labels into categories based on the same thresholds
+test_label_class <- ifelse(test_label > 6, "High", 
+                           ifelse(test_label > 2, "Medium", "Low"))
+
+# Calculate confusion matrix (classification)
+conf_matrix <- confusionMatrix(factor(test_pred_class), factor(test_label_class))
+print(conf_matrix)
+
+# Display other classification metrics
+cat("Accuracy:", conf_matrix$overall['Accuracy'], "\n")
+cat("Precision:", conf_matrix$byClass['Pos Pred Value'], "\n")
+cat("Recall:", conf_matrix$byClass['Sensitivity'], "\n")
+cat("F1-Score:", conf_matrix$byClass['F1'], "\n")
+
+# Plot feature importance
+importance_matrix <- xgb.importance(feature_names = colnames(train_matrix), model = xgb_model)
+xgb.plot.importance(importance_matrix)
+
+# Save the model (optional)
+xgb.save(xgb_model, "xgboost_model.model")
+
+# Calculate residuals
+residuals <- abs(test_label - test_pred)
+
+# Create a new data frame with all original data from df and predictions
+result_data <- df[-train_index, ] %>%
+  mutate(Predicted_Fraudulent_Score = test_pred, Residual = residuals)
+
+# Save the new dataset including all original features, predicted scores, and residuals
+write.csv(result_data, "test_data_with_predictions.csv", row.names = FALSE)
+
+# Print first few rows of the result data
+head(result_data)
+
+# Visualizations
+# Confusion matrix plot
+ggplot(as.data.frame(conf_matrix$table), aes(x = Reference, y = Prediction)) +
+  geom_tile(aes(fill = Freq), color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix", x = "True Class", y = "Predicted Class")
+
+# Multi-class ROC curve
+# Multi-class ROC using pROC
+roc_multi <- multiclass.roc(test_label_class, test_pred)
+plot(roc_multi, main = "Multi-class ROC Curve")
+
+```
+
+```{r}
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(ROCR)
+
+# Load the dataset with the Fraudulent_Score
+df <- read.csv("score_with_fraudulent_score.csv")
+
+# Select the features and target variable
+target_variable <- "Fraudulent_Score"
+features <- c("Tot_Benes", "Tot_Srvcs", "Tot_Bene_Day_Srvcs", "Avg_Sbmtd_Chrg", 
+              "Avg_Mdcr_Alowd_Amt", "Avg_Mdcr_Pymt_Amt", "Avg_Mdcr_Stdzd_Amt")
+
+# Prepare data for XGBoost (remove non-numeric and the target)
+df_xgboost <- df %>%
+  select(all_of(features), all_of(target_variable))
+
+# Split the data into training (80%) and testing (20%) sets
+set.seed(123)  # For reproducibility
+train_index <- createDataPartition(df_xgboost[[target_variable]], p = 0.8, list = FALSE)
+
+train_data <- df_xgboost[train_index, ]
+test_data <- df_xgboost[-train_index, ]
+
+# Convert training and test data to matrices (as required by xgboost)
+train_matrix <- as.matrix(train_data[, features])
+test_matrix <- as.matrix(test_data[, features])
+
+# Convert target variables for train and test
+train_label <- train_data[[target_variable]]
+test_label <- test_data[[target_variable]]
+
+# Convert to xgboost DMatrix objects
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+# Set XGBoost parameters (regression)
+params <- list(
+  objective = "reg:squarederror",  # For regression tasks
+  eval_metric = "rmse",            # Root Mean Square Error
+  max_depth = 6,                   # Maximum depth of a tree
+  eta = 0.1,                       # Learning rate
+  subsample = 0.8,                 # Subsampling ratio
+  colsample_bytree = 0.8           # Column sampling ratio
+)
+
+# Train the XGBoost model
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,  # Number of boosting rounds
+  watchlist = list(train = dtrain, test = dtest),
+  early_stopping_rounds = 10,  # Stop if no improvement after 10 rounds
+  print_every_n = 10
+)
+
+# Make predictions on the test set
+test_pred <- predict(xgb_model, newdata = dtest)
+
+# Evaluate model performance
+# Root Mean Squared Error (RMSE)
+rmse <- sqrt(mean((test_pred - test_label)^2))
+cat("RMSE:", rmse, "\n")
+
+# Mean Absolute Error (MAE)
+mae <- mean(abs(test_pred - test_label))
+cat("MAE:", mae, "\n")
+
+# R-squared
+r_squared <- 1 - (sum((test_label - test_pred)^2) / sum((test_label - mean(test_label))^2))
+cat("R-squared:", r_squared, "\n")
+
+# Convert continuous predictions to categorical (e.g., low, medium, high fraud)
+test_pred_class <- ifelse(test_pred > 6, "High", 
+                          ifelse(test_pred > 2, "Medium", "Low"))
+
+# Convert the test labels into categories based on the same thresholds
+test_label_class <- ifelse(test_label > 6, "High", 
+                           ifelse(test_label > 2, "Medium", "Low"))
+
+# Calculate confusion matrix (classification)
+conf_matrix <- confusionMatrix(factor(test_pred_class), factor(test_label_class))
+print(conf_matrix)
+
+# Display other classification metrics
+cat("Accuracy:", conf_matrix$overall['Accuracy'], "\n")
+cat("Precision:", conf_matrix$byClass['Pos Pred Value'], "\n")
+cat("Recall:", conf_matrix$byClass['Sensitivity'], "\n")
+cat("F1-Score:", conf_matrix$byClass['F1'], "\n")
+
+# Plot feature importance
+importance_matrix <- xgb.importance(feature_names = colnames(train_matrix), model = xgb_model)
+xgb.plot.importance(importance_matrix)
+
+# Save the model (optional)
+xgb.save(xgb_model, "xgboost_model.model")
+
+# Calculate residuals
+residuals <- abs(test_label - test_pred)
+
+# Create a new data frame with all original data from df and predictions
+result_data <- df[-train_index, ] %>%
+  mutate(Predicted_Fraudulent_Score = test_pred, Residual = residuals)
+
+# Save the new dataset including all original features, predicted scores, and residuals
+write.csv(result_data, "test_data_with_predictions.csv", row.names = FALSE)
+
+# Print first few rows of the result data
+head(result_data)
+
+# Visualizations
+# Confusion matrix plot
+ggplot(as.data.frame(conf_matrix$table), aes(x = Reference, y = Prediction)) +
+  geom_tile(aes(fill = Freq), color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix", x = "True Class", y = "Predicted Class")
+
+# ROC curve (if binary classification)
+pred <- prediction(test_pred, test_label_class)
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+plot(perf, main = "ROC Curve")
+
+```
+
+

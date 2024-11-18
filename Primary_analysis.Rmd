@@ -1,0 +1,352 @@
+---
+title: "OG_PROJ"
+author: "HOMADHITYA J P"
+date: "2024-10-07"
+output: html_document
+---
+
+```{r}
+# Load the necessary library
+library(dplyr)
+
+# Read the CSV file
+df <- read.csv("OG_DATA.csv")
+
+# Remove the columns 'Rndrng_Prvdr_RUCA_Desc' and 'HCPCS_Desc'
+df_cleaned <- df %>%
+  select(-Rndrng_Prvdr_RUCA_Desc, -HCPCS_Desc)
+
+# View the cleaned dataframe
+head(df_cleaned)
+
+# Optionally, save the cleaned dataframe to a new CSV file
+write.csv(df_cleaned, "OG_DATA_col_removed.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+
+if (!requireNamespace("readr", quietly = TRUE)) {
+  install.packages("readr")
+}
+
+# Load necessary libraries
+library(dplyr)
+library(readr) 
+
+# Function to impute categorical variables with mode
+impute_mode <- function(x) {
+  # Replace blank strings with NA for mode calculation
+  x[x == ""] <- NA
+  mode_value <- names(sort(table(x), decreasing = TRUE)[1])
+  return(ifelse(is.na(x), mode_value, x))
+}
+
+# Impute null/blank values for specified columns
+df_cleaned <- df_cleaned %>%
+  mutate(
+    Rndrng_Prvdr_Gndr = impute_mode(Rndrng_Prvdr_Gndr),
+    Rndrng_Prvdr_RUCA = impute_mode(Rndrng_Prvdr_RUCA)
+  )
+
+# Save the cleaned dataset as a CSV file
+write_csv(df_cleaned, "OG_DATA_cleaned.csv")
+
+# Print the first few rows of the cleaned data for verification
+print(head(df_cleaned))
+  
+```
+
+```{r}
+# Check for NA values
+null_counts <- colSums(is.na(df_cleaned))
+
+# Check for blank (empty string) values
+blank_counts <- colSums(df_cleaned == "" | is.na(df_cleaned))
+
+# Combine results into a single data frame for easier viewing
+null_blank_counts <- data.frame(
+  Column = names(df_cleaned),
+  Null_Counts = null_counts,
+  Blank_Counts = blank_counts
+)
+
+# Print the result
+print(null_blank_counts)
+```
+
+
+
+```{r}
+# Load the libraries
+library(BenfordTests)
+library(dplyr)
+library(benford.analysis)
+#install.packages('BenfordTests')
+#install.packages('benford.analysis')
+```
+
+```{r}
+
+data <- read.csv("OG_DATA_cleaned.csv")
+
+# View the first few rows of your dataset
+head(data)
+```
+
+
+```{r}
+# Select the 'Rndrng_NPI' column
+npi_column <- data$Rndrng_NPI
+```
+
+```{r}
+# Extract the first digit of each number
+first_digits <- substr(as.character(npi_column), 1, 1)
+
+# Convert it back to numeric
+first_digits <- as.numeric(first_digits)
+```
+
+
+```{r}
+# Perform Benford's Law test on the first digits using 'chisq.benftest'
+benford_test <- chisq.benftest(first_digits)
+
+# Display the test result
+print(benford_test)
+
+```
+
+```{r}
+# Load the benford.analysis package
+library(benford.analysis)
+
+# Create a benford object from the first digits
+benford_obj <- benford(first_digits, number.of.digits = 1)
+
+# Display summary of the Benford analysis
+summary(benford_obj)
+
+# Plot the results
+plot(benford_obj)
+
+```
+
+
+```{r}
+# Select the 'Rndrng_NPI' column
+npi_column <- data$Rndrng_NPI
+
+# Apply the benford function to analyze the first digits
+benford_result <- benford(npi_column, number.of.digits = 1)
+
+# Extract observed and expected counts from the bfd section
+observed_counts <- benford_result$bfd$data.dist.freq
+expected_counts <- benford_result$bfd$benford.dist.freq
+
+# Create a table with both observed and expected counts for first digits
+results_table <- data.frame(
+  Digit = benford_result$bfd$digits,
+  Observed = observed_counts,
+  Expected = expected_counts,
+  Difference = observed_counts - expected_counts
+)
+
+# View the results table
+print(results_table)
+
+```
+Observations:
+
+1) Digit '1' shows a massive excess in observed values (1,000,000) compared to the expected frequency (301,030), with a difference of 698,970.
+2) Digits '2' to '9' have observed frequencies of 0, which significantly deviates from their expected frequencies based on Benford's Law.
+
+HENCE,
+
+Justification for Last-Digit Test:
+
+The first-digit test shows a massive excess of digit '1' and no counts for digits '2' to '9', suggesting possible manipulation.
+
+Why Last-Digit Test?
+Uniform Distribution: Natural last digits (0-9) should be evenly distributed. Deviations may indicate rounding or fabricated data.
+Insensitive to Benford's Law: Last digits should be random, making irregularities easier to detect.
+Uncover Manipulation: Fraudsters often focus on leading digits, leaving last digits overlooked.
+Identify Errors: Irregular last digits can reveal data entry or rounding errors.
+
+
+
+
+```{r}
+
+# Load required libraries
+library(benford.analysis)  # For Benford's Law functions
+library(ggplot2)  # For plotting
+
+# Select the 'Rndrng_NPI' column (replace 'data' with your actual dataset)
+npi_column <- data$Rndrng_NPI
+
+# Extract the last digit from each number
+last_digits <- substr(as.character(npi_column), nchar(as.character(npi_column)), nchar(as.character(npi_column)))
+
+# Convert it back to numeric, ignoring NAs or invalid values
+last_digits <- as.numeric(last_digits)
+
+# Calculate observed counts for each last digit (0-9)
+observed_counts <- table(factor(last_digits, levels = 0:9))
+
+# Calculate expected counts (Uniform distribution for last digits, 1/10 for each)
+total_count <- sum(observed_counts)
+expected_counts <- rep(total_count / 10, 10)
+
+# Create a table with observed, expected, and difference
+results_table <- data.frame(
+  Digit = 0:9,
+  Observed = as.numeric(observed_counts),
+  Expected = expected_counts,
+  Difference = as.numeric(observed_counts) - expected_counts
+)
+
+# Order the table by decreasing Difference
+results_table <- results_table[order(results_table$Difference, decreasing = TRUE), ]
+
+# Print the ordered results table
+print(results_table)
+
+# Plotting the observed vs expected counts
+ggplot(results_table, aes(x = factor(Digit))) +
+  geom_bar(aes(y = Observed), stat = "identity", fill = "blue", alpha = 0.7) +
+  geom_line(aes(y = Expected, group = 1), color = "red", size = 1.5) +
+  geom_point(aes(y = Expected), color = "red", size = 2) +
+  labs(title = "Benford's Law for Last Digit", x = "Last Digit", y = "Count") +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+
+
+```
+
+We can observe that the huge difference values(greater than 1000) between the observed and expected are for digits 2, 0.
+
+
+```{r}
+
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Load the dataset
+dataset <- read.csv("OG_DATA_cleaned.csv")
+
+#Bar chart - Gender distribution of providers
+print(ggplot(dataset, aes(x = Rndrng_Prvdr_Gndr)) +
+        geom_bar(fill = "skyblue") +
+        labs(title = "Gender Distribution of Providers", x = "Gender", y = "Count"))
+
+
+```
+
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Assuming df_cleaned is your cleaned data frame
+# Extract Rndrng_NPI numbers ending with 2 or 0 along with Avg_Mdcr_Stdzd_Amt
+extracted_data <- df_cleaned %>%
+  filter(grepl("[20]$", Rndrng_NPI)) %>%  # Filter Rndrng_NPI ending with 2 or 0
+  select(Rndrng_NPI, Avg_Mdcr_Stdzd_Amt)  # Select relevant columns
+
+# Print the extracted data
+print(extracted_data)
+
+```
+
+
+```{r}
+# Continue from the extracted data
+grouped_data <- extracted_data %>%
+  group_by(Rndrng_NPI) %>%  # Group by Rndrng_NPI
+  summarise(Total_Avg_Mdcr_Stdzd_Amt = sum(Avg_Mdcr_Stdzd_Amt, na.rm = TRUE))  # Sum Avg_Mdcr_Stdzd_Amt
+
+# Print the grouped data
+print(grouped_data)
+
+```
+
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+
+# Assuming 'grouped_data' is already defined with 'Total_Avg_Mdcr_Stdzd_Amt'
+# Calculate the total amount for RSF calculation
+total_amount <- sum(grouped_data$Total_Avg_Mdcr_Stdzd_Amt)
+
+# Calculate Relative Size Factor for each Rndrng_NPI
+grouped_data <- grouped_data %>%
+  mutate(RSF = Total_Avg_Mdcr_Stdzd_Amt / total_amount)  # Calculate RSF
+
+# Arrange the data in descending order by RSF
+grouped_data <- grouped_data %>%
+  arrange(desc(RSF))
+
+# Display the updated grouped_data with RSF in descending order
+print(grouped_data)
+
+
+```
+
+TWO HIGHEST RSF Rndrng_NPI : 1083624670	, 1093960700
+
+
+```{r}
+dataset = read.csv("OG_DATA_cleaned.csv")
+```
+
+```{r}
+# Filter the dataset to include only rows with the two NPI numbers  
+fraudulent_data <- dataset %>% 
+  filter(Rndrng_NPI %in% c(1083624670,1093960700))
+```
+
+
+```{r}
+# Bar chart - Total Services per NPI
+ggplot(fraudulent_data, aes(x = factor(Rndrng_NPI), y = Tot_Srvcs, fill = factor(Rndrng_NPI))) +
+  geom_bar(stat = "identity") +
+  labs(title = "Total Services per NPI", x = "NPI", y = "Total Services") +
+ theme_minimal()
+```
+
+
+```{r}
+# Scatter plot - Submitted Charges vs Medicare Payments for each NPI
+ggplot(fraudulent_data, aes(x = Avg_Sbmtd_Chrg, y = Avg_Mdcr_Pymt_Amt, color = factor(Rndrng_NPI))) +
+  geom_point(size = 3) +
+  labs(title = "Submitted Charges vs Medicare Payments", x = "Avg Submitted Charge", y = "Avg Medicare Payment") +
+ theme_minimal()
+```
+
+
+
+```{r}
+# Boxplot - Distribution of Submitted Charges for each NPI
+ggplot(fraudulent_data, aes(x = factor(Rndrng_NPI), y = Avg_Sbmtd_Chrg, fill = factor(Rndrng_NPI))) +
+  geom_boxplot() +
+  labs(title = "Distribution of Submitted Charges per NPI", x = "NPI", y = "Avg Submitted Charge") +
+ theme_minimal()
+```
+
+
+
+
+```{r}
+# Bar chart - Average Medicare Payment per NPI
+ggplot(fraudulent_data, aes(x = factor(Rndrng_NPI), y = Avg_Mdcr_Pymt_Amt, fill = factor(Rndrng_NPI))) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Medicare Payment per NPI", x = "NPI", y = "Avg Medicare Payment") +
+ theme_minimal()
+```
+
